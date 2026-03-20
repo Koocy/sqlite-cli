@@ -628,9 +628,9 @@ namespace sqlite_cli
                     DisplayWarningMessage("CREATING TABLE");
                 asktablename:
                     DisplayRegularMessage("Enter table name to create: ");
-                    string table_name = ReadLineWithEscape();
+                    defaultTable = ReadLineWithEscape();
 
-                    if (isInputEmpty(table_name))
+                    if (isInputEmpty(defaultTable))
                     {
                         DisplayWarningMessage("Please enter a table name");
                         goto asktablename;
@@ -639,7 +639,7 @@ namespace sqlite_cli
                     DisplayWarningMessage("Declare columns");
                     List<string> columns = AskUserForStrArray(true, false, true, null);
 
-                    CreateTableIfNotExists(conn, table_name, columns);
+                    CreateTableIfNotExists(conn, defaultTable, columns);
 
                     return;
                 }
