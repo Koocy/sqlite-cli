@@ -27,8 +27,8 @@ namespace sqlite_cli
             dropTable = 'd',
             truncateTable = 't',
             checkTableForDuplicates = 'c',
-            viewColumnNames = 'n',
-            viewPKColumnName = 'p',
+            viewColumns = 'n',
+            viewPKColumn = 'p',
             clrScreen = 's',
             executeNonQuery = 'e';
 
@@ -46,8 +46,8 @@ namespace sqlite_cli
             dropTable,
             truncateTable,
             checkTableForDuplicates,
-            viewColumnNames,
-            viewPKColumnName,
+            viewColumns,
+            viewPKColumn,
             clrScreen,
             executeNonQuery
         };
@@ -66,8 +66,8 @@ namespace sqlite_cli
             "DROP TABLE",
             "TRUNCATE TABLE",
             "Check table for duplicate rows",
-            "View column names of table",
-            "View Primary Key of table",
+            "View columns of table",
+            "View Primary Key column of table",
             "Clear console screen",
             "Execute non-query command"
         };
@@ -249,22 +249,23 @@ namespace sqlite_cli
             return returnString;
         }
 
-        static void WriteNewRowsToTable(SQLiteConnection conn, string TableName, List<string> Columns, List<string> Values)
+        static void InsertIntoTable(SQLiteConnection conn, string TableName, List<string> Columns, List<string> Values, bool Write)
         {
-                try
-                {
-                    string command = string.Format("INSERT INTO {0} ({1}) VALUES ({2});", TableName, string.Join(", ", Columns), string.Join(", ", Values));
-                    
-                    new SQLiteCommand(command, conn).ExecuteNonQuery();
-                    DisplaySuccessMessage("Command executed successfully");
-                }
-                catch
-                {
-                    throw;
-                }
+            try
+            {
+                string command = string.Format("INSERT INTO {0} ({1}) VALUES ({2});", TableName, string.Join(", ", Columns), string.Join(", ", Values));
+
+                new SQLiteCommand(command, conn).ExecuteNonQuery();
+                if (Write)
+                    DisplaySuccessMessage("Successfully inserted row.");
+            }
+            catch
+            {
+                throw;
+            }
         }
 
-        static void DeleteRowFromTable(SQLiteConnection conn, string TableName, List<string> Columns, List<string> Values)
+        static void DeleteRowFromTable(SQLiteConnection conn, string TableName, List<string> Columns, List<string> Values, bool Write)
         {
             List<string> equals = new List<string>(Columns.Count);
 
@@ -278,7 +279,9 @@ namespace sqlite_cli
             try
             {
                 new SQLiteCommand(command, conn).ExecuteNonQuery();
-                DisplaySuccessMessage("Command executed successfully");
+
+                if (Write)
+                    DisplaySuccessMessage("Successfully deleted row");
             }
             catch
             {
@@ -316,9 +319,9 @@ namespace sqlite_cli
             }
         }
 
-        static List<string> FindColumnNames(SQLiteConnection conn, string TableName, bool Write)
+        static List<string> ListColumnsOfTable(SQLiteConnection conn, string TableName, bool Write, bool returnOnlyName, bool checkOnlyPK)
         {
-            List<String> ColumnNames = new List<string>();
+            List<string> columns = new List<string>();
 
             try
             {
@@ -326,9 +329,44 @@ namespace sqlite_cli
                 {
                     while (datareader.Read())
                     {
-                        ColumnNames.Add(datareader["name"].ToString());
+                        string column = "";
 
-                        if (Write) Console.WriteLine(datareader["name"].ToString());
+                        if (checkOnlyPK)
+                        {
+                            if (Convert.ToInt32(datareader["pk"]) == 1)
+                            {
+                                column += datareader["name"].ToString() + " ";
+
+                                if (!returnOnlyName)
+                                {
+                                    column += datareader["type"].ToString() + " ";
+                                    column += "PRIMARY KEY";
+                                }
+
+                                if (Write) Console.WriteLine(column);
+
+                                return new List<string> { column };
+                            }
+                        }
+
+                        else
+                        {
+                            column += datareader["name"].ToString() + " ";
+
+                            if (!returnOnlyName)
+                            {
+                                column += datareader["type"].ToString() + " ";
+
+                                if (Convert.ToInt32(datareader["pk"]) == 1)
+                                    column += "PRIMARY KEY";
+                                else if (Convert.ToInt32(datareader["notnull"]) == 1)
+                                    column += "NOT NULL";
+                            }
+
+                            columns.Add(column);
+
+                            if (Write) Console.WriteLine(column);
+                        }
                     }
                 }
             }
@@ -340,42 +378,16 @@ namespace sqlite_cli
             if (Write)
                 DisplaySuccessMessage("Command executed successfully");
 
-            return ColumnNames;
-        }
-
-        static string FindPKColumnName(SQLiteConnection conn, string TableName, bool Write)
-        {
-            string PKColumnName = "";
-
-            try
-            {
-                using (SQLiteDataReader datareader = new SQLiteCommand("PRAGMA table_info(" + TableName + ");", conn).ExecuteReader())
-                {
-                    while (datareader.Read())
-                    {
-                        if (Convert.ToInt32(datareader["pk"]) == 1) PKColumnName = datareader["name"].ToString();
-                    }
-                }
-            }
-            catch
-            {
-                throw;
-            }
-
-            if (Write)
-            {
-                Console.WriteLine(PKColumnName);
-                DisplaySuccessMessage("Command executed successfully");
-            }
-
-            return PKColumnName;
+            return columns;
         }
 
         static void CheckTableForDuplicateRows(SQLiteConnection conn, string TableToCheck)
         {
-            List<string> ColumnsToCheck = new List<string>(FindColumnNames(conn, TableToCheck, false));
 
-            string PKColumn = FindPKColumnName(conn, TableToCheck, false);
+            //Find all columns of table, remove the primary key column
+            List<string> ColumnsToCheck = new List<string>(ListColumnsOfTable(conn, TableToCheck, false, true, false));
+
+            string PKColumn = ListColumnsOfTable(conn, TableToCheck, false, true, true)[0];
 
             if (isInputEmpty(PKColumn))
             {
@@ -384,7 +396,9 @@ namespace sqlite_cli
             }
 
             ColumnsToCheck.Remove(PKColumn);
+            //
 
+            //Read the table, organize read lines into "rows"
             string read = ReadFromTable(conn, false, TableToCheck, ColumnsToCheck);
             
             string[] lines = read.Split(new string[] {"\n"}, StringSplitOptions.None);
@@ -400,13 +414,17 @@ namespace sqlite_cli
                     rows.Add(string.Join("\n", lines[(i * ColumnsToCheck.Count) + j]));
                 }
             }
+            //
 
+            //Check each row against all other rows in the table
+            int deletedRows = 0;
             for (int i = 0; i < rows.Count - 1; i++)
             {
                 for (int j = i + 1; j < rows.Count; j++)
                 {
                     if (rows[i] == rows[j])
                     {
+                        //Find the values of each column in each row
                         List<string> values = new List<string>(ColumnsToCheck);
                         string[] rowLines = rows[j].Split(new string [] {"\n"}, StringSplitOptions.None);
 
@@ -414,33 +432,42 @@ namespace sqlite_cli
                         {
                             values[k] = rowLines[k].Split(new string[] { ": " }, StringSplitOptions.None)[1];
                         }
+                        //
 
+                        //Find the Primary Key value of duplicate rows so we can delete the second one from the table
                         string[] PKLines = ReadFromTableWhere(conn, false, TableToCheck, new List<string> {PKColumn}, ColumnsToCheck, values).Split(new string[] {"\n"}, StringSplitOptions.None);
                         string PKLineSecondRow = PKLines[1];
 
                         string PKValueSecondRow = PKLineSecondRow.Split(new string[] {": "}, StringSplitOptions.None)[1];
+                        //
 
+                        //Delete the duplicate row and adjust the rows array so that we the for loops dont break
                         try
                         {
-                            DeleteRowFromTable(conn, TableToCheck, new List<string> { PKColumn }, new List<string> { PKValueSecondRow });
+                            DeleteRowFromTable(conn, TableToCheck, new List<string> { PKColumn }, new List<string> { PKValueSecondRow }, false);
 
                             rows.RemoveAt(j);
                             j--;
+
+                            deletedRows++;
                         }
                         catch
                         {
                             throw;
                         }
+                        //
                     }
                 }
             }
+
+            DisplaySuccessMessage("Successfully deleted " + deletedRows + " rows.");
         }
 
         static string ReadWholeTable(SQLiteConnection conn, string TableName, bool Write)
         {
             try
             {
-                List<string> Columns = FindColumnNames(conn, TableName, false);
+                List<string> Columns = ListColumnsOfTable(conn, TableName, false, true, false);
 
                 return ReadFromTable(conn, Write, TableName, Columns);
             }
@@ -471,6 +498,7 @@ namespace sqlite_cli
             try
             {
                 new SQLiteCommand(command, conn).ExecuteNonQuery();
+                DisplaySuccessMessage("Command executed successfully");
             }
             catch
             {
@@ -492,6 +520,7 @@ namespace sqlite_cli
             try
             {
                 new SQLiteCommand(command, conn).ExecuteNonQuery();
+                DisplaySuccessMessage("Command executed successfully");
             }
             catch
             {
@@ -526,47 +555,23 @@ namespace sqlite_cli
             return true;
         }
 
-        static int AskUserForNumberOfItems(bool col, bool row)
+        static int AskUserForNumberOfItems(bool col)
         {
-            string thingToAskFor = "";
+            string input;
 
-            if (col) thingToAskFor = "columns";
-            else if (row) thingToAskFor = "rows";
-            else thingToAskFor = "values";
-
-            int numItems = 0;
-
-            while (numItems <= 0)
+            do 
             {
-            asknumber:
-                DisplayRegularMessage("Number of " + thingToAskFor + ": ");
-                try
-                {
-                    string input = ReadLineWithEscape();
-
-                    if (!isInputNumber(input))
-                        goto asknumber;
-
-                    numItems = int.Parse(input);
-                }
-                catch
-                {
-                    throw;
-                }
+                DisplayRegularMessage("Number of " + ((col) ? "columns" : "rows") + ": ");
+                input = ReadLineWithEscape();
             }
+            while (!isInputNumber(input));
 
-            return numItems;
+            return int.Parse(input);
         }
 
-        static List<string> AskUserForStrArray(bool col, bool row, bool AskUserForNumItems, int? numItems)
+        static List<string> AskUserForStrArray(bool askForColumnName, List<string> columnNames, bool AskUserForNumItems, int? numItems)
         {
-            if (AskUserForNumItems) numItems = AskUserForNumberOfItems(col, row);
-
-            string thingToAskFor = "";
-
-            if (col) thingToAskFor = "column";
-            else if (row) thingToAskFor = "row";
-            else thingToAskFor = "value";
+            if (AskUserForNumItems) numItems = AskUserForNumberOfItems(askForColumnName);
 
             List<string> strArray = new List<string>();
 
@@ -574,16 +579,25 @@ namespace sqlite_cli
             {
                 for (int i = 0; i < numItems; i++)
                 {
+                    string str;
 
-                askforcolumns:
-                    DisplayRegularMessage((i + 1) + ". " + thingToAskFor + ": ");
+                    if (askForColumnName)
+                        if (numItems > 1)
+                            str = (i + 1) + ". column:";
+                        else
+                            str = "column:";
+                    else
+                        str = columnNames[i] + "=";
+
+                ask:
+                    DisplayRegularMessage(str);
 
                     string input = ReadLineWithEscape();
 
                     if (isInputEmpty(input))
                     {
-                        DisplayWarningMessage("Please enter a " + thingToAskFor);
-                        goto askforcolumns;
+                        DisplayWarningMessage("Please enter a value or press ESC to cancel.");
+                        goto ask;
                     }
 
                     strArray.Add(input);
@@ -637,7 +651,7 @@ namespace sqlite_cli
                     }
 
                     DisplayWarningMessage("Declare columns");
-                    List<string> columns = AskUserForStrArray(true, false, true, null);
+                    List<string> columns = AskUserForStrArray(true, null, true, null);
 
                     CreateTableIfNotExists(conn, defaultTable, columns);
 
@@ -822,7 +836,7 @@ namespace sqlite_cli
                             }
 
                             DisplayWarningMessage("Declare columns");
-                            List<string> columns = AskUserForStrArray(true, false, true, null);
+                            List<string> columns = AskUserForStrArray(true, null, true, null);
 
                             CreateTableIfNotExists(conn, table_name, columns);
 
@@ -833,9 +847,9 @@ namespace sqlite_cli
                             DisplayWarningMessage("READING FROM TABLE " + defaultTable);
                             DisplayRegularMessage("Specify the columns you want to read");
 
-                            List<string> colsToRead = AskUserForStrArray(true, false, true, null);
+                            columns = AskUserForStrArray(true, null, true, null);
 
-                            ReadFromTable(conn, true, defaultTable, colsToRead);
+                            ReadFromTable(conn, true, defaultTable, columns);
 
                             break;
 
@@ -844,10 +858,10 @@ namespace sqlite_cli
                             DisplayWarningMessage("READING FROM TABLE " + defaultTable);
 
                             DisplayRegularMessage("Specify the columns you want to read");
-                            colsToRead = AskUserForStrArray(true, false, true, null);
+                            List<string> colsToRead = AskUserForStrArray(true, null, true, null);
 
                             DisplayRegularMessage("Specify the columns to be included in the search query");
-                            List<string> colsConditions = AskUserForStrArray(true, false, true, null);
+                            List<string> colsConditions = AskUserForStrArray(true, null, true, null);
 
                             List<string> values = new List<string>();
                             
@@ -874,24 +888,18 @@ namespace sqlite_cli
 
                             DisplayWarningMessage("INSERTING INTO TABLE " + defaultTable);
 
-                            int numCols = 0;
-                            List<string> columnNames = new List<string>();
-
                             DisplayRegularMessage("Specify how many rows to insert");
-                            int numRows = AskUserForNumberOfItems(false, true);
+                            int numRows = AskUserForNumberOfItems(false);
+
+                            DisplayRegularMessage("Specify columns to insert");
+                            columns = AskUserForStrArray(true, null, true, null);
 
                             for (int i = 0; i < numRows; i++)
                             {
-                                DisplayRegularMessage("Specify the number of columns to insert");
-                                numCols = AskUserForNumberOfItems(true, false);
-
-                                DisplayRegularMessage("Specify columns to insert");
-                                columnNames = AskUserForStrArray(true, false, false, numCols);
-
                                 DisplayRegularMessage("Specify values to insert");
-                                values = AskUserForStrArray(false, false, false, numCols);
+                                values = AskUserForStrArray(false, columns, false, columns.Count);
 
-                                WriteNewRowsToTable(conn, defaultTable, columnNames, values);
+                                InsertIntoTable(conn, defaultTable, columns, values, true);
                             }
 
                             break;
@@ -900,21 +908,20 @@ namespace sqlite_cli
                             DisplayWarningMessage("INSERTING DUPLICATE ROWS INTO TABLE " + defaultTable);
 
                             DisplayRegularMessage("Specify how many times (rows) to insert"); 
-                            numRows = AskUserForNumberOfItems(false, true);
-
-                            DisplayRegularMessage("Specify the number of columns to insert");
-                            numCols = AskUserForNumberOfItems(true, false);
+                            numRows = AskUserForNumberOfItems(false);
 
                             DisplayRegularMessage("Specify columns to insert");
-                            columnNames = AskUserForStrArray(true, false, false, numCols);
+                            columns = AskUserForStrArray(true, null, true, null);
 
                             DisplayRegularMessage("Specify values to insert");
-                            values = AskUserForStrArray(false, false, false, numCols);
+                            values = AskUserForStrArray(false, columns, false, columns.Count);
 
                             for (int i = 0; i < numRows; i++)
                             {
-                                WriteNewRowsToTable(conn, defaultTable, columnNames, values);
+                                InsertIntoTable(conn, defaultTable, columns, values, false);
                             }
+
+                            DisplaySuccessMessage("Successfully inserted " + numRows + " rows");
 
                             break;
                             
@@ -923,9 +930,9 @@ namespace sqlite_cli
                             DisplayWarningMessage("DELETING FROM TABLE " + defaultTable);
 
                             DisplayRegularMessage("Specify which columns will be in the WHERE statement");
-                            List<string> Columns = AskUserForStrArray(true, false, true, null);
+                            columns = AskUserForStrArray(true, null, true, null);
                             
-                            DeleteRowFromTable(conn, defaultTable, Columns, AskUserForStrArray(false, false, false, Columns.Count));
+                            DeleteRowFromTable(conn, defaultTable, columns, AskUserForStrArray(false, columns, false, columns.Count), true);
                             
                             break;
 
@@ -934,16 +941,16 @@ namespace sqlite_cli
                             DisplayWarningMessage("UPDATING TABLE " + defaultTable);
 
                             DisplayRegularMessage("Specify which columns to update:");
-                            List<string> ColumnsToChange = AskUserForStrArray(true, false, true, null);
+                            List<string> ColumnsToChange = AskUserForStrArray(true, null, true, null);
 
                             DisplayRegularMessage("Specify new values for the columns:");
-                            List<string> ValuesNew = AskUserForStrArray(false, false, false, ColumnsToChange.Count);
+                            List<string> ValuesNew = AskUserForStrArray(false, ColumnsToChange, false, ColumnsToChange.Count);
 
                             DisplayRegularMessage("Specify which columns will be in the WHERE statement:");
-                            List<string> ColumnsForWHERE = AskUserForStrArray(true, false, true, null);
+                            List<string> ColumnsForWHERE = AskUserForStrArray(true, null, true, null);
 
                             DisplayRegularMessage("Specify which values will be checked:");
-                            List<string> ValuesForWHERE = AskUserForStrArray(false, false, false, ColumnsForWHERE.Count);
+                            List<string> ValuesForWHERE = AskUserForStrArray(false, ColumnsForWHERE, false, ColumnsForWHERE.Count);
 
                             Update(conn, defaultTable, ColumnsToChange, ValuesNew, ColumnsForWHERE, ValuesForWHERE);
 
@@ -956,12 +963,12 @@ namespace sqlite_cli
                             DisplayWarningMessage("UPDATING TABLE " + defaultTable);
 
                             DisplayRegularMessage("Specify which columns to update:");
-                            Columns = AskUserForStrArray(true, false, true, null);
+                            columns = AskUserForStrArray(true, null, true, null);
 
                             DisplayRegularMessage("Specify new values for the columns:");
-                            List<string> Values = AskUserForStrArray(false, false, false, Columns.Count);
+                            List<string> Values = AskUserForStrArray(false, columns, false, columns.Count);
 
-                            UpdateWholeTable(conn, defaultTable, Columns, Values);
+                            UpdateWholeTable(conn, defaultTable, columns, Values);
 
                             break;
 
@@ -993,19 +1000,19 @@ namespace sqlite_cli
 
                             break;
 
-                        case viewColumnNames:
+                        case viewColumns:
 
-                            DisplayWarningMessage("VIEWING COLUMN NAMES OF TABLE " + defaultTable);
+                            DisplayWarningMessage("VIEWING COLUMNS OF TABLE " + defaultTable);
 
-                            FindColumnNames(conn, defaultTable, true);
+                            ListColumnsOfTable(conn, defaultTable, true, false, false);
                             
                             break;
 
-                        case viewPKColumnName:
+                        case viewPKColumn:
 
-                            DisplayWarningMessage("VIEWING PRIMARY KEY COLUMN NAME OF TABLE " + defaultTable);
+                            DisplayWarningMessage("VIEWING PRIMARY KEY COLUMN OF TABLE " + defaultTable);
                             
-                            FindPKColumnName(conn, defaultTable, true);
+                            ListColumnsOfTable(conn, defaultTable, true, false, true);
                             
                             break;
 
